@@ -41,6 +41,10 @@ linux内存管理模块部分代码注释
 * 内核对大内存页的特性的支持
  * 基于VFS文件系统的hugetlbfs的实现(hugetlb.c)
  * 三级目录映射的实现机制(huge_memory.c)
+* 交换分区(swap.c swapfile.c)
+ * 基于VFS的交换分区管理
+ * 交换页缓存机制
+
 
 ###进程角度的内存空间管理
 * 内存页表(memory.c)
