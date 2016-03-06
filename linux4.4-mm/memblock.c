@@ -25,12 +25,22 @@
 
 #include "internal.h"
 
+/**
+ * memblock管理算法: 内存申请的时候，仅是把被申请到的内存加入到
+ * memblock.reserved中，并不会在memblock.memory里面进行相关的删除或
+ * 修改操作，这是为何申请和释放的操作都基于memblock.reserved的原因
+ */
+/* 通过全局变量定义为memblock的算法管理中的memory和reserved准备了内存空间 */
 static struct memblock_region memblock_memory_init_regions[INIT_MEMBLOCK_REGIONS] __initdata_memblock;
 static struct memblock_region memblock_reserved_init_regions[INIT_MEMBLOCK_REGIONS] __initdata_memblock;
 #ifdef CONFIG_HAVE_MEMBLOCK_PHYS_MAP
 static struct memblock_region memblock_physmem_init_regions[INIT_PHYSMEM_REGIONS] __initdata_memblock;
 #endif
 
+/**
+ * memblock算法的实现是，它将所有状态都保存在一个全局变量memblock中，
+ * 算法的初始化以及内存的申请释放都是在将内存块的状态做变更
+ */
 struct memblock memblock __initdata_memblock = {
 	.memory.regions		= memblock_memory_init_regions,
 	.memory.cnt		= 1,	/* empty dummy entry */
@@ -46,7 +56,9 @@ struct memblock memblock __initdata_memblock = {
 	.physmem.max		= INIT_PHYSMEM_REGIONS,
 #endif
 
+	/* 表示内存申请自高地址向低地址 */
 	.bottom_up		= false,
+	/* current_limit设为~0，即0xFFFFFFFF */
 	.current_limit		= MEMBLOCK_ALLOC_ANYWHERE,
 };
 
@@ -166,6 +178,14 @@ __memblock_find_range_bottom_up(phys_addr_t start, phys_addr_t end,
  *
  * RETURNS:
  * Found address on success, 0 on failure.
+ */
+/*
+ *通过使用for_each_free_mem_range_reverse宏封装调用__next_free_mem_range_rev()
+ *函数，此函数逐一将memblock.memory里面的内存块信息提取出来与memblock.reserved
+ *的各项信息进行检验，确保返回的this_start和this_end不会与reserved的内存
+ *存在交叉重叠的情况。然后通过clamp取中间值，判断大小是否满足，
+ *满足的情况下，将自末端向前（因为这是top-down申请方式）的size大小的
+ *空间的起始地址（前提该地址不会超出this_start）返回回去
  */
 static phys_addr_t __init_memblock
 __memblock_find_range_top_down(phys_addr_t start, phys_addr_t end,
@@ -553,6 +573,7 @@ int __init_memblock memblock_add_range(struct memblock_type *type,
 		return 0;
 
 	/* special case for empty array */
+	/* 如果memblock算法管理内存为空的时候，则将当前空间添加进去 */
 	if (type->regions[0].size == 0) {
 		WARN_ON(type->cnt != 1 || type->total_size);
 		type->regions[0].base = base;
@@ -571,6 +592,10 @@ repeat:
 	base = obase;
 	nr_new = 0;
 
+	/*
+	 *不为空的情况下，则先检查是否存在内存重叠的情况，
+	 *如果有的话，则剔除重叠部分，然后将其余非重叠的部分添加进去
+	 */
 	for (i = 0; i < type->cnt; i++) {
 		struct memblock_region *rgn = &type->regions[i];
 		phys_addr_t rbase = rgn->base;
@@ -612,12 +637,14 @@ repeat:
 	 * insertions; otherwise, merge and return.
 	 */
 	if (!insert) {
+		/* 如果出现region[]数组空间不够的情况，则添加新region[]空间 */
 		while (type->cnt + nr_new > type->max)
 			if (memblock_double_array(type, obase, size) < 0)
 				return -ENOMEM;
 		insert = true;
 		goto repeat;
 	} else {
+		/* 把紧挨着的内存合并 */
 		memblock_merge_regions(type);
 		return 0;
 	}
@@ -1174,6 +1201,7 @@ static phys_addr_t __init memblock_alloc_range_nid(phys_addr_t size,
 
 	found = memblock_find_in_range_node(size, align, start, end, nid,
 					    flags);
+	/* 如果分配成功, 将对应内存块置为已分配: 即添加到memblock.reserved中 */
 	if (found && !memblock_reserve(found, size)) {
 		/*
 		 * The min_count is set to 0 so that memblock allocations are
@@ -1218,6 +1246,7 @@ again:
 
 phys_addr_t __init __memblock_alloc_base(phys_addr_t size, phys_addr_t align, phys_addr_t max_addr)
 {
+	/* NUMA_NO_NODE入参表示无NUMA的节点, 因为当前还没初始化到那一步 */
 	return memblock_alloc_base_nid(size, align, max_addr, NUMA_NO_NODE,
 				       MEMBLOCK_NONE);
 }
@@ -1242,6 +1271,7 @@ phys_addr_t __init memblock_alloc_base(phys_addr_t size, phys_addr_t align, phys
  */
 phys_addr_t __init memblock_alloc(phys_addr_t size, phys_addr_t align)
 {
+	/* MEMBLOCK_ALLOC_ACCESSIBLE表示申请内存可访问 */
 	return memblock_alloc_base(size, align, MEMBLOCK_ALLOC_ACCESSIBLE);
 }
 
@@ -1607,6 +1637,7 @@ bool __init_memblock memblock_is_region_reserved(phys_addr_t base, phys_addr_t s
 	return memblock_overlaps_region(&memblock.reserved, base, size);
 }
 
+/* 该函数主要用于对memblock.memory做修整，剔除不对齐的部分 */
 void __init_memblock memblock_trim_memory(phys_addr_t align)
 {
 	phys_addr_t start, end, orig_start, orig_end;
